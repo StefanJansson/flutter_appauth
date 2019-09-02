@@ -70,15 +70,22 @@
 
 FlutterMethodChannel* channel;
 NSString *const AUTHORIZE_METHOD = @"authorize";
-NSString *const AUTHORIZE_AND_EXCHANGE_CODE_METHOD = @"authorizeAndExchangeCode";
-NSString *const TOKEN_METHOD = @"token";
 NSString *const AUTHORIZE_ERROR_CODE = @"authorize_failed";
-NSString *const AUTHORIZE_AND_EXCHANGE_CODE_ERROR_CODE = @"authorize_and_exchange_code_failed";
-NSString *const DISCOVERY_ERROR_CODE = @"discovery_failed";
-NSString *const TOKEN_ERROR_CODE = @"token_failed";
-NSString *const DISCOVERY_ERROR_MESSAGE_FORMAT = @"Error retrieving discovery document: %@";
-NSString *const TOKEN_ERROR_MESSAGE_FORMAT = @"Failed to get token: %@";
 NSString *const AUTHORIZE_ERROR_MESSAGE_FORMAT = @"Failed to authorize: %@";
+
+NSString *const AUTHORIZE_AND_EXCHANGE_CODE_METHOD = @"authorizeAndExchangeCode";
+NSString *const AUTHORIZE_AND_EXCHANGE_CODE_ERROR_CODE = @"authorize_and_exchange_code_failed";
+
+NSString *const TOKEN_METHOD = @"token";
+NSString *const TOKEN_ERROR_CODE = @"token_failed";
+NSString *const TOKEN_ERROR_MESSAGE_FORMAT = @"Failed to get token: %@";
+
+NSString *const ENDSESSION_METHOD = @"end_session";
+NSString *const ENDSESSION_ERROR_CODE = @"end_session_failed";
+NSString *const ENDSESSION_ERROR_MESSAGE_FORMAT = @"Failed to get end session: %@";
+
+NSString *const DISCOVERY_ERROR_CODE = @"discovery_failed";
+NSString *const DISCOVERY_ERROR_MESSAGE_FORMAT = @"Error retrieving discovery document: %@";
 
 
 + (void)registerWithRegistrar:(NSObject<FlutterPluginRegistrar>*)registrar {
@@ -97,6 +104,8 @@ NSString *const AUTHORIZE_ERROR_MESSAGE_FORMAT = @"Failed to authorize: %@";
         [self handleAuthorizeMethodCall:[call arguments] result:result exchangeCode:false];
     } else if([TOKEN_METHOD isEqualToString:call.method]) {
         [self handleTokenMethodCall:[call arguments] result:result];
+    } else if([ENDSESSION_METHOD isEqualToString:call.method]) {
+        [self handleEndSessionMethodCall:[call arguments] result:result];
     } else {
         result(FlutterMethodNotImplemented);
     }
@@ -298,6 +307,105 @@ NSString *const AUTHORIZE_ERROR_MESSAGE_FORMAT = @"Failed to authorize: %@";
     return processedResponses;
 }
 
+ssionMethodCall:[call arguments] result:result];
+    } else {
+        result(FlutterMethodNotImplemented);
+    }
+}
+
+- (void)ensureAdditionalParametersInitialized:(AuthorizationTokenRequestParameters *)requestParameters {
+    if(!requestParameters.additionalParameters) {
+        requestParameters.additionalParameters = [[NSMutableDictionary alloc] init];
+    }
+}
+
+-(void)handleEndSessionMethodCall:(NSDictionary*)arguments result:(FlutterResult)result exchangeCode:(BOOL)exchangeCode {
+    AuthorizationTokenRequestParameters *requestParameters = [[AuthorizationTokenRequestParameters alloc] initWithArguments:arguments];
+    if(requestParameters.serviceConfigurationParameters != nil) {
+        OIDServiceConfiguration *serviceConfiguration =
+        [[OIDServiceConfiguration alloc]
+         initWithAuthorizationEndpoint:[NSURL URLWithString:requestParameters.serviceConfigurationParameters[@"endSessionEndpoint"]]];
+        if(requestParameters.idTokenHint) {
+            [self ensureAdditionalParametersInitialized:requestParameters];
+            [requestParameters.additionalParameters setValue:requestParameters.loginHint forKey:@"id_token_hint"];
+            if(requestParameters.postLogoutRedirectUri) {
+                [requestParameters.additionalParameters setValue:requestParameters.postLogoutRedirectUri forKey:@"post_logout_redirect_uri"];
+                if(requestParameters.state) {
+                    [requestParameters.additionalParameters setValue:requestParameters.loginHint forKey:@"state"];
+                }
+            }
+        }
+        
+        [self performAuthorization:serviceConfiguration clientId:requestParameters.clientId clientSecret:requestParameters.clientSecret scopes:requestParameters.scopes redirectUrl:requestParameters.redirectUrl additionalParameters:requestParameters.additionalParameters result:result exchangeCode:exchangeCode];
+    } else if (requestParameters.discoveryUrl) {
+        NSURL *discoveryUrl = [NSURL URLWithString:requestParameters.discoveryUrl];
+        
+        [OIDAuthorizationService discoverServiceConfigurationForDiscoveryURL:discoveryUrl
+                                                                  completion:^(OIDServiceConfiguration *_Nullable configuration,
+                                                                               NSError *_Nullable error) {
+                                                                      
+                                                                      if (!configuration) {
+                                                                          [self finishWithDiscoveryError:error result:result];
+                                                                          return;
+                                                                      }
+                                                                      
+                                                                      [self performAuthorization:configuration clientId:requestParameters.clientId clientSecret:requestParameters.clientSecret scopes:requestParameters.scopes redirectUrl:requestParameters.redirectUrl additionalParameters:requestParameters.additionalParameters result:result exchangeCode:exchangeCode];
+                                                                  }];
+    } else {
+        NSURL *issuerUrl = [NSURL URLWithString:requestParameters.issuer];
+        [OIDAuthorizationService discoverServiceConfigurationForIssuer:issuerUrl
+                                                            completion:^(OIDServiceConfiguration *_Nullable configuration,
+                                                                         NSError *_Nullable error) {
+                                                                
+                                                                if (!configuration) {
+                                                                    [self finishWithDiscoveryError:error result:result];
+                                                                    return;
+                                                                }
+                                                                
+                                                                [self performAuthorization:configuration clientId:requestParameters.clientId clientSecret:requestParameters.clientSecret scopes:requestParameters.scopes redirectUrl:requestParameters.redirectUrl additionalParameters:requestParameters.additionalParameters result:result exchangeCode:exchangeCode];
+                                                            }];
+    }
+    
+    
+}
+
+- (void)performEndSession:(OIDServiceConfiguration *)serviceConfiguration clientId:(NSString*)clientId clientSecret:(NSString*)clientSecret scopes:(NSArray *)scopes redirectUrl:(NSString*)redirectUrl additionalParameters:(NSDictionary *)additionalParameters result:(FlutterResult)result exchangeCode:(BOOL)exchangeCode{
+    OIDAuthorizationRequest *request =
+    [[OIDAuthorizationRequest alloc] initWithConfiguration:serviceConfiguration
+                                                  clientId:clientId
+                                              clientSecret:clientSecret
+                                                    scopes:scopes
+                                               redirectURL:[NSURL URLWithString:redirectUrl]
+                                              responseType:OIDResponseTypeCode
+                                      additionalParameters:additionalParameters];
+    UIViewController *rootViewController =
+    [UIApplication sharedApplication].delegate.window.rootViewController;
+    if(exchangeCode) {
+        _currentAuthorizationFlow = [OIDAuthState authStateByPresentingAuthorizationRequest:request presentingViewController: rootViewController
+                                                                                   callback:^(OIDAuthState *_Nullable authState,
+                                                                                              NSError *_Nullable error) {
+                                                                                       if(authState) {
+                                                                                           result([self processResponses:authState.lastTokenResponse authResponse:authState.lastAuthorizationResponse]);
+                                                                                           
+                                                                                       } else {
+                                                                                           [self finishWithError:AUTHORIZE_AND_EXCHANGE_CODE_ERROR_CODE message:[self formatMessageWithError:AUTHORIZE_ERROR_MESSAGE_FORMAT error:error] result:result];
+                                                                                       }
+                                                                                   }];
+    } else {
+        _currentAuthorizationFlow = [OIDAuthorizationService presentAuthorizationRequest:request presentingViewController:rootViewController callback:^(OIDAuthorizationResponse *_Nullable authorizationResponse, NSError *_Nullable error) {
+            if(authorizationResponse) {
+                NSMutableDictionary *processedResponse = [[NSMutableDictionary alloc] init];
+                [processedResponse setObject:authorizationResponse.additionalParameters forKey:@"authorizationAdditionalParameters"];
+                [processedResponse setObject:authorizationResponse.authorizationCode forKey:@"authorizationCode"];
+                [processedResponse setObject:authorizationResponse.request.codeVerifier forKey:@"codeVerifier"];
+                result(processedResponse);
+            } else {
+                [self finishWithError:AUTHORIZE_ERROR_CODE message:[self formatMessageWithError:AUTHORIZE_ERROR_MESSAGE_FORMAT error:error] result:result];
+            }
+        }];
+        
+    }
+}
 
 - (BOOL)application:(UIApplication *)application
             openURL:(NSURL *)url

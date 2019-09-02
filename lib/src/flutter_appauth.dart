@@ -1,4 +1,6 @@
 import 'package:flutter/services.dart';
+import 'package:flutter_appauth/src/endsession_request.dart';
+import 'package:flutter_appauth/src/endsession_response.dart';
 import 'package:meta/meta.dart';
 import 'authorization_request.dart';
 import 'authorization_response.dart';
@@ -58,4 +60,11 @@ class FlutterAppAuth {
         result['tokenType'],
         result['tokenAdditionalParameters']?.cast<String, String>());
   }
+  Future<EndSessionResponse> endSession(EndSessionRequest request) async {
+    var result = await _channel.invokeMethod('end_session', request.toMap());
+    return EndSessionResponse(
+        result['authorizationCode']);
+  }
+
+
 }
